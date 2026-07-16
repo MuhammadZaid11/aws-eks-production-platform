@@ -21,3 +21,25 @@ module "security_groups" {
   vpc_id = module.vpc.vpc_id
 
 }
+
+
+
+
+
+module "eks" {
+
+  source = "../modules/eks"
+
+  project_name = "eks-platform"
+
+  cluster_name = "eks-platform-cluster"
+
+  cluster_role_arn = module.iam.cluster_role_arn
+
+  node_role_arn = module.iam.node_role_arn
+
+  private_subnets = module.vpc.private_subnets
+
+  cluster_sg = module.security_groups.cluster_sg
+
+}
