@@ -43,3 +43,10 @@ module "eks" {
   cluster_sg = module.security_groups.cluster_sg
 
 }
+
+module "github_oidc" {
+
+  source = "../modules/github-oidc"
+
+
+}
