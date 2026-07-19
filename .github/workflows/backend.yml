@@ -1,0 +1,89 @@
+name: Build & Deploy Backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/backend/**"
+      - ".github/workflows/backend.yml"
+
+permissions:
+  id-token: write
+  contents: write   # write is needed because this workflow commits the new image tag back to the repo
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: backend
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app/backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: app/backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+        # NOTE (Zaid): your package.json test script currently exits 1 on purpose
+        # because no tests are written yet. Write at least a few real tests
+        # (see the exercises below) — do NOT silence this step with continue-on-error.
+        # A CI pipeline that can't fail is not protecting you from anything.
+
+      - name: Run npm audit (dependency vulnerability check)
+        run: npm audit --audit-level=high
+        continue-on-error: true  # warn for now; make this blocking once you clean up findings
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image
+        run: |
+          docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
+
+      - name: Scan image for vulnerabilities (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: "${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
+          format: "table"
+          severity: "CRITICAL,HIGH"
+          exit-code: "1"   # fails the build if critical/high CVEs are found
+
+      - name: Tag and push image to ECR
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          docker tag $ECR_REPOSITORY:$IMAGE_TAG $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          # Deliberately NOT pushing a ":latest" tag — every deployed image must be
+          # traceable back to an exact git commit.
+
+      - name: Update Helm values with new image tag (GitOps trigger)
+        run: |
+          sed -i "s/tag: \".*\"/tag: \"${IMAGE_TAG}\"/" ../../helm/backend/values.yaml
+          cd ../..
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add helm/backend/values.yaml
+          git commit -m "ci: deploy backend image ${IMAGE_TAG}" || echo "No changes to commit"
+          git push
